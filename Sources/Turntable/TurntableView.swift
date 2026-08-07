@@ -3,6 +3,11 @@ import SwiftUI
 struct TurntableView: View {
     @ObservedObject var monitor: NowPlayingMonitor
 
+    /// Taken as a parameter and injected into the environment below, rather than read from
+    /// the environment here. That keeps the root view's type as plain `TurntableView`, so
+    /// swapping skins is an assignment to `NSHostingView.rootView`.
+    var theme: Theme = .walnut
+
     /// Current tilt of the arm out of the platter plane, in degrees.
     @State private var armTilt: Double = 0
 
@@ -10,9 +15,25 @@ struct TurntableView: View {
     // absolute coordinates instead of threading a GeometryReader through.
     static let panelSize = CGSize(width: 200, height: 224)
 
-    private let platterDiameter: CGFloat = 134
     private let platterCenter = CGPoint(x: 100, y: 86)
     private let pivot = CGPoint(x: 175, y: 58)
+
+    /// Set by the skin. Safe to vary because nothing downstream stores a radius: the arm
+    /// derives its length from the pivot and solves its angle from whatever record is
+    /// actually on the platter.
+    private var platterDiameter: CGFloat { theme.platterDiameter }
+
+    /// Where the stylus starts and finishes, in panel points.
+    private var outerRadius: CGFloat { platterDiameter * 0.47 }
+    private var innerRadius: CGFloat { platterDiameter * theme.innermostGrooveRatio }
+
+    /// Radius the stylus should be sitting at right now.
+    private var trackingRadius: CGFloat {
+        outerRadius + (innerRadius - outerRadius) * monitor.progress
+    }
+
+    /// Gap between the outermost groove and where a linear tracker parks.
+    private static let railParkGap: CGFloat = 13
 
     private var pivotToSpindle: CGFloat {
         let dx = platterCenter.x - pivot.x
@@ -26,9 +47,6 @@ struct TurntableView: View {
     private var tubeLength: CGFloat {
         pivotToSpindle - TonearmView.hardwareLength
     }
-
-    /// 33⅓ RPM works out to 200 degrees per second.
-    private let degreesPerSecond: Double = 200
 
     /// Where the arm parks when nothing is playing: straight down from the pivot, which
     /// puts the stylus clear of the record on its rest.
@@ -61,6 +79,9 @@ struct TurntableView: View {
         ZStack {
             deck
 
+            DeckControls()
+                .frame(width: Self.panelSize.width, height: Self.panelSize.height)
+
             VinylPlatter(diameter: platterDiameter)
                 .position(platterCenter)
 
@@ -71,7 +92,8 @@ struct TurntableView: View {
                                     paused: !monitor.track.isPlaying)) { _ in
                 VinylDisc(
                     artwork: monitor.artwork,
-                    rotation: monitor.spinSeconds * degreesPerSecond,
+                    // 33⅓ RPM is 200°/s; the skin decides, and a 45 is half again as fast.
+                    rotation: monitor.spinSeconds * theme.degreesPerSecond,
                     diameter: platterDiameter
                 )
                 .position(platterCenter)
@@ -80,11 +102,17 @@ struct TurntableView: View {
             VinylChrome(diameter: platterDiameter)
                 .position(platterCenter)
 
-            armRest
+            if !theme.isLinearTracked {
+                armRest
+            }
 
             // The arm sweeps a few degrees per minute, so once a second is plenty.
             TimelineView(.periodic(from: .now, by: 1.0)) { _ in
-                tonearm
+                if theme.isLinearTracked {
+                    linearArm
+                } else {
+                    tonearm
+                }
             }
 
             trackInfo
@@ -92,12 +120,13 @@ struct TurntableView: View {
                 .frame(width: Self.panelSize.width, alignment: .leading)
                 .position(x: Self.panelSize.width / 2, y: 188)
         }
+        .environment(\.theme, theme)
         .frame(width: Self.panelSize.width, height: Self.panelSize.height)
         .background(deckBackground)
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
+                .strokeBorder(theme.deckBorder, lineWidth: 1)
         )
         .onChange(of: monitor.track.isPlaying) { _ in
             liftSwingAndSetDown()
@@ -122,22 +151,46 @@ struct TurntableView: View {
 
     private var deckBackground: some View {
         LinearGradient(
-            colors: [
-                Color(red: 0.19, green: 0.15, blue: 0.13),
-                Color(red: 0.12, green: 0.09, blue: 0.08),
-                Color(red: 0.07, green: 0.06, blue: 0.05)
-            ],
+            colors: theme.deckGradient,
             startPoint: .top,
             endPoint: .bottom
         )
     }
 
     private var deck: some View {
-        // Faint plinth ring so the platter reads as recessed into the deck.
-        Circle()
-            .strokeBorder(Color.white.opacity(0.05), lineWidth: 1)
-            .frame(width: platterDiameter * 1.14, height: platterDiameter * 1.14)
+        // Faint plinth ring so the platter reads as recessed into the deck. Kept outside
+        // the mat whatever width the skin gives it.
+        let diameter = platterDiameter * (theme.platterRingRatio + 0.08)
+        return Circle()
+            .strokeBorder(theme.plinthRing, lineWidth: 1)
+            .frame(width: diameter, height: diameter)
             .position(platterCenter)
+    }
+
+    /// A rail lies along the record's radius, so playback position is a distance instead of
+    /// an angle — there is no triangle to solve and no arc for the stylus to ride.
+    private var linearArm: some View {
+        let parkRadius = outerRadius + Self.railParkGap
+        let radius = monitor.track.isPlaying ? trackingRadius : parkRadius
+        let span = parkRadius - innerRadius
+        let travel = span > 0 ? Double((parkRadius - radius) / span) : 0
+
+        let length = span + LinearArmView.carriageWidth
+        // Carry the rail past the spindle so it reads as a bridge over the record rather
+        // than a bar that stops in the middle of it.
+        let overhang = innerRadius + 7
+        let width = length + overhang
+        let left = platterCenter.x + innerRadius - LinearArmView.carriageWidth / 2 - overhang
+
+        let radians = armTilt * .pi / 180
+        let lift = Double(sin(radians) / sin(Self.liftAngle * .pi / 180))
+
+        return LinearArmView(length: length, carriage: travel, lift: lift,
+                             railOverhang: overhang)
+            .position(x: left + width / 2,
+                      y: platterCenter.y - LinearArmView.stylusOffset)
+            .animation(.easeInOut(duration: Self.swingDuration),
+                       value: monitor.track.isPlaying)
     }
 
     private var tonearm: some View {
@@ -151,7 +204,7 @@ struct TurntableView: View {
             .rotationEffect(.degrees(armAngle), anchor: arm.pivotAnchor)
             // Applied after the rotation so the light stays fixed — inside the arm the
             // shadow would swing around with it.
-            .shadow(color: .black.opacity(0.45 - 0.15 * elevation),
+            .shadow(color: .black.opacity((0.45 - 0.15 * elevation) * theme.shadowStrength),
                     radius: 3 + 5 * elevation,
                     x: 2 + 4 * elevation,
                     y: 3 + 6 * elevation)
@@ -167,7 +220,7 @@ struct TurntableView: View {
             RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                 .fill(
                     LinearGradient(
-                        colors: [Color(white: 0.36), Color(white: 0.15)],
+                        colors: theme.armRestPost,
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -175,11 +228,11 @@ struct TurntableView: View {
                 .frame(width: 13, height: 17)
             // Cradle the tube settles into.
             Capsule()
-                .fill(Color.black.opacity(0.6))
+                .fill(theme.armRestCradle)
                 .frame(width: 10, height: 4)
                 .offset(y: -6)
         }
-        .shadow(color: .black.opacity(0.5), radius: 3, y: 2)
+        .shadow(color: .black.opacity(0.5 * theme.shadowStrength), radius: 3, y: 2)
         .position(x: stylus.x, y: stylus.y + 5)
     }
 
@@ -202,10 +255,7 @@ struct TurntableView: View {
         guard monitor.track.isPlaying else { return Self.restAngle }
 
         let stylusDistance = TonearmView(tubeLength: tubeLength).stylusDistance
-        // Starts at the outer edge and finishes on the innermost groove ring.
-        let outerRadius = platterDiameter * 0.47
-        let innerRadius = platterDiameter * VinylDisc.innermostGrooveRatio
-        let radius = outerRadius + (innerRadius - outerRadius) * monitor.progress
+        let radius = trackingRadius
 
         let dx = platterCenter.x - pivot.x
         let dy = platterCenter.y - pivot.y
@@ -235,16 +285,16 @@ struct TurntableView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("nowplaying-cli 가 필요합니다")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(theme.noticeColor)
                 Text("brew install nowplaying-cli")
                     .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.45))
+                    .foregroundStyle(theme.mutedColor)
             }
 
         case .idle:
             Text("재생 중인 음악이 없습니다")
                 .font(.system(size: 11))
-                .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(theme.mutedColor)
 
         case .playing:
             VStack(alignment: .leading, spacing: 2) {
@@ -252,18 +302,18 @@ struct TurntableView: View {
                     if !monitor.track.isPlaying {
                         Image(systemName: "pause.fill")
                             .font(.system(size: 8))
-                            .foregroundStyle(.white.opacity(0.5))
+                            .foregroundStyle(theme.mutedColor)
                     }
                     Text(monitor.track.title)
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.95))
+                        .foregroundStyle(theme.titleColor)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
 
                 Text(monitor.track.artist)
                     .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.55))
+                    .foregroundStyle(theme.subtitleColor)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }

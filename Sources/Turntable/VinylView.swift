@@ -5,51 +5,98 @@ import SwiftUI
 /// spindle) in front of it, and both are static.
 
 struct VinylPlatter: View {
+    /// Diameter of the record. The mat is drawn as a multiple of it.
     let diameter: CGFloat
 
+    @Environment(\.theme) private var theme
+
+    private static let strobeDots = 44
+
+    private var matDiameter: CGFloat { diameter * theme.platterRingRatio }
+
     var body: some View {
-        Circle()
-            .fill(
-                RadialGradient(
-                    colors: [Color(white: 0.20), Color(white: 0.08)],
-                    center: .center,
-                    startRadius: 0,
-                    endRadius: diameter * 0.58
+        ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [theme.platterInner, theme.platterOuter],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: matDiameter * 0.55
+                    )
                 )
-            )
-            .frame(width: diameter * 1.06, height: diameter * 1.06)
-            .shadow(color: .black.opacity(0.6), radius: 10, y: 4)
+                .frame(width: matDiameter, height: matDiameter)
+
+            if theme.hasStrobe {
+                strobe
+            }
+        }
+        .shadow(color: .black.opacity(0.6 * theme.shadowStrength), radius: 10, y: 4)
+    }
+
+    /// Dots around the rim of the mat, in the band the record leaves uncovered. Lit by a
+    /// mains-frequency lamp on a real deck they appear to stand still at the right speed;
+    /// here they are simply what says "Technics" at a glance.
+    private var strobe: some View {
+        // Centre of the exposed ring: halfway between the record's edge and the mat's.
+        let radius = diameter * (1 + theme.platterRingRatio) / 4
+        return ForEach(0..<Self.strobeDots, id: \.self) { index in
+            Circle()
+                .fill(theme.strobeColor)
+                .frame(width: 1.7, height: 1.7)
+                .offset(y: -radius)
+                .rotationEffect(.degrees(Double(index) / Double(Self.strobeDots) * 360))
+        }
     }
 }
 
-/// The spinning disc: album art filling the whole record, with grooves layered on top.
+/// The spinning disc: the album art, the grooves layered over it, and — on skins that press
+/// their records properly — a centre label instead of art across the whole face.
 struct VinylDisc: View {
     let artwork: NSImage?
     let rotation: Double
     let diameter: CGFloat
 
-    /// Groove band, as an inset from the disc edge in fractions of the diameter.
-    static let grooveOuterInset = 0.015
-    static let grooveInnerInset = 0.390
-    private static let grooveCount = 24
-
-    /// Radius of the innermost groove ring, as a fraction of the diameter. The tonearm
-    /// finishes here rather than at the spindle, so the stylus lands on the last groove.
-    static let innermostGrooveRatio = 0.5 - grooveInnerInset
+    @Environment(\.theme) private var theme
 
     var body: some View {
         // Rasterised once so each frame only re-composites a flat texture; rebuilding
         // the groove stack every frame costs several percent of a core.
         ZStack {
-            artworkDisc
+            face
             grooves
+            if case .centerLabel(let ratio) = theme.discStyle {
+                label(ratio: ratio)
+            }
         }
         .drawingGroup()
         .rotationEffect(.degrees(rotation))
         .frame(width: diameter, height: diameter)
     }
 
-    private var artworkDisc: some View {
+    /// What the record is made of, under the grooves.
+    @ViewBuilder
+    private var face: some View {
+        switch theme.discStyle {
+        case .fullFace:
+            artworkFill
+                .frame(width: diameter, height: diameter)
+                .clipShape(Circle())
+        case .centerLabel:
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [theme.vinylColor.opacity(0.92), theme.vinylColor],
+                        center: .center,
+                        startRadius: 0,
+                        endRadius: diameter * 0.5
+                    )
+                )
+                .frame(width: diameter, height: diameter)
+        }
+    }
+
+    private var artworkFill: some View {
         Group {
             if let artwork {
                 Image(nsImage: artwork)
@@ -58,41 +105,56 @@ struct VinylDisc: View {
                     .scaledToFill()
             } else {
                 LinearGradient(
-                    colors: [Color(red: 0.30, green: 0.20, blue: 0.18),
-                             Color(red: 0.14, green: 0.10, blue: 0.09)],
+                    colors: theme.artworkFallback,
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
                 )
             }
         }
-        .frame(width: diameter, height: diameter)
-        .clipShape(Circle())
     }
 
+    /// Paper label the art shrinks onto. Drawn over the grooves rather than under them,
+    /// since a label is glued on top of the pressing.
+    private func label(ratio: CGFloat) -> some View {
+        let size = diameter * ratio
+        return artworkFill
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+            .overlay(
+                Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 0.8)
+            )
+    }
+
+    /// Concentric rings across the playing surface. Dark and multiplied over album art;
+    /// pale and normally blended over black vinyl, where the grooves are what catches
+    /// the light rather than what blocks it.
     private var grooves: some View {
-        // Dark concentric rings over the art, stopping short of the spindle the way a
-        // real pressing leaves its centre smooth.
         ZStack {
-            ForEach(0..<Self.grooveCount, id: \.self) { index in
-                let t = Double(index) / Double(Self.grooveCount - 1)
+            ForEach(0..<theme.grooveCount, id: \.self) { index in
+                let t = Double(index) / Double(max(1, theme.grooveCount - 1))
                 let inset = diameter
-                    * (Self.grooveOuterInset
-                       + (Self.grooveInnerInset - Self.grooveOuterInset) * t)
+                    * (theme.grooveOuterInset
+                       + (theme.grooveInnerInset - theme.grooveOuterInset) * t)
+                let strong = index % 3 == 0
                 Circle()
                     .strokeBorder(
-                        Color.black.opacity(index % 3 == 0 ? 0.30 : 0.17),
-                        lineWidth: index % 3 == 0 ? 1.0 : 0.6
+                        theme.grooveTint.opacity(
+                            strong ? theme.grooveStrongOpacity : theme.grooveFaintOpacity
+                        ),
+                        lineWidth: strong ? 1.0 : 0.6
                     )
                     .padding(inset)
             }
         }
-        .blendMode(.multiply)
+        .blendMode(theme.grooveBlend)
     }
 }
 
 /// Everything that sits on top of the disc and does not rotate with it.
 struct VinylChrome: View {
     let diameter: CGFloat
+
+    @Environment(\.theme) private var theme
 
     var body: some View {
         ZStack {
@@ -109,7 +171,7 @@ struct VinylChrome: View {
         Circle()
             .fill(
                 RadialGradient(
-                    colors: [.clear, .clear, .black.opacity(0.5)],
+                    colors: [.clear, .clear, theme.rimShade],
                     center: .center,
                     startRadius: diameter * 0.38,
                     endRadius: diameter * 0.5
@@ -120,25 +182,26 @@ struct VinylChrome: View {
 
     private var edge: some View {
         Circle()
-            .strokeBorder(Color.black.opacity(0.55), lineWidth: 2)
+            .strokeBorder(theme.edgeDark, lineWidth: 2)
             .overlay(
-                Circle().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
+                Circle().strokeBorder(theme.edgeHighlight, lineWidth: 0.5)
             )
     }
 
     /// Models a fixed light source, so it must not rotate with the disc.
     private var sheen: some View {
-        Circle()
+        let clear = theme.sheenColor.opacity(0)
+        return Circle()
             .fill(
                 AngularGradient(
                     gradient: Gradient(stops: [
-                        .init(color: .white.opacity(0.00), location: 0.00),
-                        .init(color: .white.opacity(0.13), location: 0.10),
-                        .init(color: .white.opacity(0.00), location: 0.24),
-                        .init(color: .white.opacity(0.00), location: 0.50),
-                        .init(color: .white.opacity(0.09), location: 0.60),
-                        .init(color: .white.opacity(0.00), location: 0.74),
-                        .init(color: .white.opacity(0.00), location: 1.00)
+                        .init(color: clear, location: 0.00),
+                        .init(color: sheenStop(0.13), location: 0.10),
+                        .init(color: clear, location: 0.24),
+                        .init(color: clear, location: 0.50),
+                        .init(color: sheenStop(0.09), location: 0.60),
+                        .init(color: clear, location: 0.74),
+                        .init(color: clear, location: 1.00)
                     ]),
                     center: .center,
                     angle: .degrees(-35)
@@ -148,14 +211,25 @@ struct VinylChrome: View {
             .allowsHitTesting(false)
     }
 
+    private func sheenStop(_ base: Double) -> Color {
+        theme.sheenColor.opacity(min(1, base * theme.sheenIntensity))
+    }
+
+    /// The hole, and the post standing in it. A 45 punches a hole wide enough that it has
+    /// to read as punched *through* — hence the rim shadow, which a 7pt LP hole never needs.
     private var spindle: some View {
-        ZStack {
+        let hole = diameter * theme.spindleRatio
+        let post = diameter * 0.028
+        return ZStack {
             Circle()
-                .fill(Color.black.opacity(0.75))
-                .frame(width: diameter * 0.055, height: diameter * 0.055)
+                .fill(theme.spindleOuter)
+                .frame(width: hole, height: hole)
+                .overlay(
+                    Circle().strokeBorder(Color.black.opacity(0.35), lineWidth: 1)
+                )
             Circle()
-                .fill(Color(white: 0.72))
-                .frame(width: diameter * 0.028, height: diameter * 0.028)
+                .fill(theme.spindleInner)
+                .frame(width: post, height: post)
         }
     }
 }

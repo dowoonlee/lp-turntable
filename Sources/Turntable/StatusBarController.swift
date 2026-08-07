@@ -6,13 +6,16 @@ final class StatusBarController {
     private let onToggleVisibility: () -> Void
     private let onToggleAlwaysOnTop: (Bool) -> Void
     private let onSetOpacity: (Double) -> Void
+    private let onSetTheme: (Theme) -> Void
 
     init(onToggleVisibility: @escaping () -> Void,
          onToggleAlwaysOnTop: @escaping (Bool) -> Void,
-         onSetOpacity: @escaping (Double) -> Void) {
+         onSetOpacity: @escaping (Double) -> Void,
+         onSetTheme: @escaping (Theme) -> Void) {
         self.onToggleVisibility = onToggleVisibility
         self.onToggleAlwaysOnTop = onToggleAlwaysOnTop
         self.onSetOpacity = onSetOpacity
+        self.onSetTheme = onSetTheme
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let image = NSImage(
@@ -42,6 +45,10 @@ final class StatusBarController {
         onTop.target = self
         onTop.state = Preferences.shared.alwaysOnTop ? .on : .off
         menu.addItem(onTop)
+
+        let theme = NSMenuItem(title: "테마", action: nil, keyEquivalent: "")
+        theme.submenu = makeThemeMenu()
+        menu.addItem(theme)
 
         let opacity = NSMenuItem(title: "투명도", action: nil, keyEquivalent: "")
         opacity.submenu = makeOpacityMenu()
@@ -75,8 +82,32 @@ final class StatusBarController {
         return menu
     }
 
+    private func makeThemeMenu() -> NSMenu {
+        let menu = NSMenu()
+        let current = Preferences.shared.theme
+
+        for theme in Theme.all {
+            let item = NSMenuItem(title: theme.name,
+                                  action: #selector(setTheme(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = theme.id
+            item.state = theme.id == current.id ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
     @objc private func toggleVisibility() {
         onToggleVisibility()
+    }
+
+    @objc private func setTheme(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let theme = Theme.named(id) else { return }
+        Preferences.shared.theme = theme
+        onSetTheme(theme)
+        statusItem.menu = makeMenu()
     }
 
     @objc private func setOpacity(_ sender: NSMenuItem) {

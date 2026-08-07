@@ -10,7 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let size = TurntableView.panelSize
         let panel = WidgetPanel(contentRect: NSRect(origin: .zero, size: size))
-        let hostingView = MenuHostingView(rootView: TurntableView(monitor: monitor))
+        let hostingView = MenuHostingView(
+            rootView: TurntableView(monitor: monitor, theme: Preferences.shared.theme)
+        )
         panel.contentView = hostingView
 
         if panel.setFrameUsingName(panel.frameAutosaveName) == false {
@@ -33,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onSetOpacity: { [weak panel] value in
                 panel?.updateOpacity(value)
+            },
+            // Rebuilding the root view rather than observing a store: the root's type stays
+            // `TurntableView`, and SwiftUI treats this as an update of the same root, so the
+            // arm's tilt state and the timelines survive the swap.
+            onSetTheme: { [weak hostingView, monitor] theme in
+                hostingView?.rootView = TurntableView(monitor: monitor, theme: theme)
             }
         )
         self.statusBar = statusBar
