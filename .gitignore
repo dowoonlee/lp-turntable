@@ -1,0 +1,8 @@
+# Swift Package Manager
+.build/
+
+# Built app bundle (produced by Scripts/bundle.sh)
+*.app/
+
+# macOS
+.DS_Store
